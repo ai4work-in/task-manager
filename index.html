@@ -10,6 +10,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="format-detection" content="telephone=no">
 <title>Task Manager</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Carlito:wght@400;700&family=Sora:wght@700;800&display=swap" rel="stylesheet">
 <style>
@@ -84,8 +86,8 @@
     padding:34px 26px; padding-top:calc(34px + var(--safe-top)); padding-bottom:calc(34px + var(--safe-bottom));
     background:var(--white); overflow-y:auto; -webkit-overflow-scrolling:touch;}
 
-  .login-logo{font-family:'Sora',sans-serif; font-weight:800; font-size:22px; margin-bottom:6px;}
-  .login-logo .ai{color:#141414;} .login-logo .four{color:var(--navy);} .login-logo .work{color:#9a9a9a; font-weight:400;}
+  /* ai4work wordmark — the real asset, not a CSS approximation */
+  .login-logo{display:block; width:170px; max-width:58%; height:auto; margin:0 0 16px;}
   .login-title{font-family:'Sora',sans-serif; font-weight:700; font-size:19px; margin-bottom:6px;}
   .login-sub{font-size:13px; color:var(--gray); margin-bottom:22px; line-height:1.5;}
   .input-lg{width:100%; border:1.5px solid var(--line); border-radius:12px; padding:13px 14px; font-size:16px;
@@ -323,8 +325,11 @@
   @keyframes spin{to{transform:rotate(360deg);}}
 
   .empty-state{text-align:center; padding:44px 22px; color:var(--gray); font-size:13px; line-height:1.5;}
-  .credit{text-align:center; font-size:10.5px; color:#9a9a9a; padding:18px 0 8px;}
-  .credit .four{color:var(--navy); font-weight:700;}
+  /* "created by ai4work" credit — muted per brand convention (~55%, 12-13px) */
+  .credit{display:-webkit-flex; display:flex; -webkit-align-items:center; align-items:center;
+    -webkit-justify-content:center; justify-content:center; padding:18px 0 10px; opacity:.55;}
+  .credit span{font-size:12px; color:#5f5f5f;}
+  .credit img{height:13px; width:auto; margin-left:5px; display:block;}
 
   /* Where flex gap IS supported, use it and drop the margin fallbacks so
      spacing doesn't double up. */

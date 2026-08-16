@@ -246,7 +246,7 @@ function render() {
 function screenLogin() {
   return '' +
   '<div class="center-screen">' +
-    '<div class="login-logo"><span class="ai">ai</span><span class="four">4</span><span class="work">work</span></div>' +
+    '<img class="login-logo" src="ai4work-logo.png" alt="ai4work" width="456" height="98">' +
     '<div class="login-title">Login karein</div>' +
     '<div class="login-sub">Apna registered mobile number daalein. 4-digit PIN aapka admin assign karta hai.</div>' +
     '<div class="field-label">Mobile Number</div>' +
@@ -477,7 +477,8 @@ function emptyState(msg) {
 }
 
 function credit() {
-  return '<div class="credit">created by <span>ai</span><span class="four">4</span><span>work</span></div>';
+  return '<div class="credit"><span>created by</span>' +
+    '<img src="ai4work-logo.png" alt="ai4work"></div>';
 }
 
 function adminCard(t) {
