@@ -45,8 +45,12 @@ var API = (function () {
         try {
           json = JSON.parse(text);
         } catch (e) {
-          // Usually an Apps Script auth/HTML error page rather than our JSON.
-          throw new ApiError('Unexpected response from the server. Check the deployment access setting is "Anyone".', 500);
+          // An HTML page rather than our JSON. Two causes, and they need opposite advice:
+          // a misconfigured deployment (permanent, dev-facing) or an Apps Script blip
+          // (transient, observed on the first call after an idle gap). Retrying is the
+          // right advice for a user either way, so don't send them to a settings screen.
+          // apiError() localises this sentinel — see 'network'.
+          throw new ApiError('badresponse', 500);
         }
 
         if (!json.ok) {

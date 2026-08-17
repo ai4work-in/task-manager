@@ -166,10 +166,19 @@ function val(id) {
 /** Uniform API error surfacing — network failures get a friendlier line. */
 function apiError(err) {
   ui.busy = false;
-  var msg = (err && err.message === 'network')
-    ? L('Could not reach the server. Check your connection and try again.',
-        'Server se connect nahi ho paya. Connection check karke dobara try karein.')
-    : (err && err.message) || L('Something went wrong.', 'Kuch galat ho gaya.');
+  var code = err && err.message;
+  var msg;
+
+  if (code === 'network') {
+    msg = L('Could not reach the server. Check your connection and try again.',
+            'Server se connect nahi ho paya. Connection check karke dobara try karein.');
+  } else if (code === 'badresponse') {
+    // Usually transient. Tell them to retry — not to go looking at settings.
+    msg = L('The server did not respond properly. Please try again.',
+            'Server ne theek se jawab nahi diya. Dobara try karein.');
+  } else {
+    msg = code || L('Something went wrong.', 'Kuch galat ho gaya.');
+  }
 
   if (err && err.status === 401) {
     showToast(msg);
@@ -857,10 +866,29 @@ function notesSection(t) {
 }
 
 /* ============ DETAIL ACTIONS ============ */
+/**
+ * One write at a time. Every call here goes to Apps Script, which takes 2-4
+ * seconds per round trip — so the user MUST see something happen on the tap,
+ * or they conclude the app is broken, tap again, and the repeat tap either gets
+ * swallowed or (on a checkbox) undoes the first one. Both taps must speak.
+ */
 function guard() {
-  if (ui.busy) return false;
+  if (ui.busy) {
+    showToast(L('Still saving — one moment.', 'Save ho raha hai — ek second rukein.'));
+    return false;
+  }
   ui.busy = true;
+  showToast(L('Saving...', 'Save ho raha hai...'));
   return true;
+}
+
+/** The live copy of a sub-task inside state.detail, for optimistic updates. */
+function detailSubtask(subId) {
+  var subs = (state.detail && state.detail.subtasks) || [];
+  for (var i = 0; i < subs.length; i++) {
+    if (String(subs[i].id) === String(subId)) return subs[i];
+  }
+  return null;
 }
 
 function saveTitle(value) {
@@ -879,7 +907,18 @@ function saveField(field, value) {
 
 function toggleSubtask(subId, currentStatus) {
   if (!guard()) return;
-  API.updateSubtask({ id: subId, status: currentStatus === 'Done' ? 'Open' : 'Done' })
+  var next = currentStatus === 'Done' ? 'Open' : 'Done';
+
+  // Tick the box immediately. The server is the authority and reloadDetail below
+  // reconciles, but the tap has to register instantly — see guard().
+  var sub = detailSubtask(subId);
+  var previous = sub ? sub.status : null;
+  if (sub) {
+    sub.status = next;
+    render();
+  }
+
+  API.updateSubtask({ id: subId, status: next })
     .then(function (res) {
       if (res.task_status === 'Done') {
         showToast(L('All sub-tasks done — task marked complete. It will be permanently deleted in 2 days.',
@@ -887,7 +926,11 @@ function toggleSubtask(subId, currentStatus) {
       }
       return reloadDetail();
     })
-    .catch(apiError);
+    .catch(function (err) {
+      // Put the box back the way the server still has it.
+      if (sub && previous !== null) sub.status = previous;
+      apiError(err);
+    });
 }
 
 function saveSubtaskDue(subId, value) {
