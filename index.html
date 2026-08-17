@@ -297,6 +297,15 @@
   .note-time{font-size:10px; color:var(--gray);}
   .note-text{font-size:13px; color:#333; line-height:1.45; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:break-word;}
 
+  /* ---------- notes on a single sub-task (partial-progress updates) ---------- */
+  .subtask-notes-toggle{font-size:11px; font-weight:700; color:var(--navy); background:var(--navy-light);
+    padding:5px 10px; border-radius:10px; cursor:pointer; white-space:nowrap;
+    -webkit-flex-shrink:0; flex-shrink:0; min-height:24px;}
+  .subtask-notes{background:var(--white); border:1px solid var(--line); border-radius:10px;
+    padding:2px 11px 10px; margin-top:6px;}
+  .subtask-notes .note-item{padding:9px 0;}
+  .subtask-notes .note-item:last-of-type{border-bottom:none;}
+
   .settings-tabs{display:-webkit-flex; display:flex; padding:12px 10px 0; background:var(--white);
     border-bottom:1px solid var(--line); -webkit-flex-shrink:0; flex-shrink:0; overflow-x:auto; -webkit-overflow-scrolling:touch;}
   .settings-tabs::-webkit-scrollbar{display:none;}

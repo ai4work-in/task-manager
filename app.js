@@ -29,6 +29,7 @@ var ui = {
   taskFilter: 'all',
   settingsTab: 'types',
   openTagDropdown: null,
+  openSubtaskNotes: null,
   draftSubtasks: [],
   newTaskType: null,
   newTaskPriority: null,
@@ -831,6 +832,23 @@ function subtaskRow(t, s) {
           esc(s.status === 'Done' ? L('Done', 'Poora hua') : badge.text) + '</span>' +
       '</div>' +
 
+      // The status list is admin-managed (Settings -> Statuses), so this picks up
+      // whatever Shannkey has added without a code change.
+      (canToggle
+        ? '<div class="row-actions">' +
+            '<select class="form-input" style="max-width:150px; padding:6px 8px; font-size:13px;" ' +
+              'onchange="setSubtaskStatus(' + jsStr(s.id) + ', this.value)">' +
+              state.statuses.map(function (name) {
+                return '<option value="' + esc(name) + '"' +
+                  (String(s.status) === String(name) ? ' selected' : '') + '>' +
+                  esc(statusLabel(name)) + '</option>';
+              }).join('') +
+            '</select>' +
+          '</div>'
+        : '') +
+
+      subtaskNotes(s, canToggle) +
+
       '<div class="row-actions">' +
         '<button class="copy-btn" onclick="copySubtask(' + jsStr(s.id) + ')">&#128203; ' +
           esc(L('Copy', 'Copy')) + '</button>' +
@@ -840,6 +858,70 @@ function subtaskRow(t, s) {
   '</div>';
 
   return html;
+}
+
+/**
+ * Notes on one sub-task — where partial progress gets recorded, since a
+ * sub-task's status can't say "6 of 10 slides done".
+ *
+ * `canPost` is the same test as the checkbox: your own sub-task if you're an
+ * Employee, anyone's if you manage. The server enforces it again.
+ */
+function subtaskNotes(s, canPost) {
+  var notes = s.notes || [];
+  var open = ui.openSubtaskNotes === s.id;
+
+  if (!notes.length && !canPost) return '';
+
+  var header = '<div class="subtask-notes-toggle" onclick="toggleSubtaskNotes(' + jsStr(s.id) + ')">' +
+    esc(L('Notes', 'Notes')) + (notes.length ? ' (' + notes.length + ')' : '') +
+    ' <span>' + (open ? '&#9652;' : '&#9662;') + '</span></div>';
+
+  if (!open) return '<div class="row-actions">' + header + '</div>';
+
+  var body = notes.map(function (n) {
+    return '<div class="note-item">' +
+      '<div class="note-head">' +
+        '<span class="note-author">' + esc(n.author_name) + '</span>' +
+        (n.tagged_id ? '<span class="note-tag">@' + esc(firstName(n.tagged_name)) + '</span>' : '') +
+        '<span class="note-time">' + esc(fmtDateTime(n.created_at)) + '</span>' +
+      '</div>' +
+      '<div class="note-text">' + esc(n.text) + '</div>' +
+    '</div>';
+  }).join('');
+
+  if (!notes.length) {
+    body = '<div style="font-size:12px; color:var(--gray); margin:4px 0;">' +
+      esc(L('No notes on this sub-task yet.', 'Is sub-task par abhi koi note nahi hai.')) + '</div>';
+  }
+
+  return '<div class="row-actions">' + header + '</div>' +
+    '<div class="subtask-notes">' + body +
+      (canPost
+        ? '<div class="subtask-input-row" style="margin-top:6px;">' +
+            '<input class="form-input" id="subNote_' + esc(s.id) + '" placeholder="' +
+              esc(L('Progress update...', 'Kitna kaam hua, likhein...')) + '">' +
+            '<button class="add-subtask-btn" onclick="addSubtaskNote(' + jsStr(s.id) + ')">' +
+              esc(L('Post', 'Post karein')) + '</button>' +
+          '</div>'
+        : '') +
+    '</div>';
+}
+
+function toggleSubtaskNotes(subId) {
+  ui.openSubtaskNotes = (ui.openSubtaskNotes === subId) ? null : subId;
+  render();
+}
+
+/**
+ * Custom statuses are admin-authored free text, so they render as typed for
+ * everyone — same rule as priority words, which are never translated either.
+ */
+function statusLabel(name) {
+  if (name === 'Open')        return L('Open', 'Baaki hai');
+  if (name === 'In Progress') return L('In Progress', 'Chal raha hai');
+  if (name === 'Done')        return L('Done', 'Poora hua');
+  return name;
 }
 
 function addSubtaskForm(t) {
@@ -976,6 +1058,61 @@ function toggleSubtask(subId, currentStatus) {
     });
 }
 
+/**
+ * Set a sub-task to any status on the admin-managed list — the dropdown path.
+ * toggleSubtask is the checkbox shortcut for the same thing; both land here in
+ * spirit, and both flip locally first so the tap registers immediately.
+ */
+function setSubtaskStatus(subId, value) {
+  var sub = detailSubtask(subId);
+  if (sub && String(sub.status) === String(value)) return;   // nothing changed
+  if (!guard()) return;
+
+  var previous = sub ? sub.status : null;
+  if (sub) {
+    sub.status = value;
+    render();
+  }
+
+  API.updateSubtask({ id: subId, status: value })
+    .then(function (res) {
+      if (res.task_status) state.detail.status = res.task_status;
+
+      if (res.task_status === 'Done') {
+        showToast(L('All sub-tasks done — task marked complete. It will be permanently deleted in 2 days.',
+                    'Sabhi sub-tasks poore — task complete. 2 din mein permanently delete ho jayega.'));
+        return reloadDetail();
+      }
+
+      state.detail.purge_due = '';
+      syncBoardFromDetail();
+      ui.busy = false;
+      showToast(L('Status updated', 'Status update ho gaya'));
+      render();
+    })
+    .catch(function (err) {
+      if (sub && previous !== null) sub.status = previous;
+      apiError(err);
+    });
+}
+
+/** A progress note on one sub-task. Same tagging rules as a task-level note. */
+function addSubtaskNote(subId) {
+  var text = val('subNote_' + subId);
+  if (!text) {
+    showToast(L('Write something first', 'Pehle kuch likhein'));
+    return;
+  }
+  if (!guard()) return;
+
+  API.addNote({ task_id: state.detail.id, subtask_id: subId, text: text })
+    .then(function () {
+      showToast(L('Note posted', 'Note post ho gaya'));
+      return reloadDetail();
+    })
+    .catch(apiError);
+}
+
 function saveSubtaskDue(subId, value) {
   if (!guard()) return;
   API.updateSubtask({ id: subId, due_date: value })
@@ -1094,6 +1231,14 @@ function copySubtask(subId) {
     'Status: ' + s.status
   ];
   if (s.status !== 'Done' && daysUntil(s.due_date) < 0) lines.push('*OVERDUE*');
+
+  // The latest progress note is usually the whole reason someone is sharing this.
+  var notes = s.notes || [];
+  if (notes.length) {
+    var last = notes[notes.length - 1];
+    lines.push('');
+    lines.push('Latest update (' + (last.author_name || '') + '): ' + last.text);
+  }
 
   copyToClipboard(lines.join('\n'));
 }
