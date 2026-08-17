@@ -297,6 +297,10 @@
   .note-time{font-size:10px; color:var(--gray);}
   .note-text{font-size:13px; color:#333; line-height:1.45; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:break-word;}
 
+  /* ---------- edit lock: created work is read-only until unlocked ---------- */
+  .edit-lock{border-color:var(--navy); color:var(--navy); background:var(--navy-light);}
+  .edit-lock.open{background:var(--navy); color:var(--white); border-color:var(--navy);}
+
   /* ---------- notes on a single sub-task (partial-progress updates) ---------- */
   .subtask-notes-toggle{font-size:11px; font-weight:700; color:var(--navy); background:var(--navy-light);
     padding:5px 10px; border-radius:10px; cursor:pointer; white-space:nowrap;

@@ -30,6 +30,10 @@ var ui = {
   settingsTab: 'types',
   openTagDropdown: null,
   openSubtaskNotes: null,
+  // Everything is locked once created. The pencil unlocks it, for this visit to
+  // this screen only — navigating away locks it again (see go()).
+  unlockedTask: null,
+  unlockedSubtasks: {},
   draftSubtasks: [],
   newTaskType: null,
   newTaskPriority: null,
@@ -156,7 +160,53 @@ function go(r, payload) {
   route = r;
   ui.payload = payload || {};
   ui.openTagDropdown = null;
+  // Leaving the screen re-locks everything, so nobody comes back later to a task
+  // still sitting open for editing.
+  ui.unlockedTask = null;
+  ui.unlockedSubtasks = {};
   render();
+}
+
+/* ---- edit locking: created work is read-only until deliberately unlocked ---- */
+function taskUnlocked() {
+  return !!state.detail && ui.unlockedTask === state.detail.id;
+}
+
+function subtaskUnlocked(subId) {
+  return ui.unlockedSubtasks[subId] === true;
+}
+
+function requestTaskEdit() {
+  if (!confirm('Is task mein changes karne hain?')) return;
+  ui.unlockedTask = state.detail.id;
+  render();
+}
+
+function lockTaskEdit() {
+  ui.unlockedTask = null;
+  render();
+}
+
+function requestSubtaskEdit(subId) {
+  var sub = detailSubtask(subId);
+  var title = sub ? sub.title : '';
+  if (!confirm('"' + title + '" mein changes karne hain?')) return;
+  ui.unlockedSubtasks[subId] = true;
+  render();
+}
+
+function lockSubtaskEdit(subId) {
+  delete ui.unlockedSubtasks[subId];
+  render();
+}
+
+/** Pencil to unlock, or a done-editing control once unlocked. */
+function editLockButton(unlocked, openFn, closeFn) {
+  return unlocked
+    ? '<button class="copy-btn edit-lock open" onclick="' + closeFn + '">&#128274; ' +
+        esc('Lock karein') + '</button>'
+    : '<button class="copy-btn edit-lock" onclick="' + openFn + '">&#9998; ' +
+        esc('Edit') + '</button>';
 }
 
 function val(id) {
@@ -235,8 +285,40 @@ function loadBoard(checkDue) {
 }
 
 /* ============ RENDER ROOT ============ */
+
+/**
+ * Identifies the screen the user is looking at, not just the route — opening a
+ * different task is a different screen even though the route stays 'detail'.
+ */
+function screenKey() {
+  if (route === 'detail') return 'detail:' + (state.detail ? state.detail.id : '');
+  return route;
+}
+
+var lastScreenKey = null;
+
+/**
+ * The scrollable element inside #app. Two screens use different containers.
+ * Guarded because render() throwing would leave a white screen, and this runs on
+ * whatever old WebView the team happens to have.
+ */
+function scrollHost(app) {
+  if (!app || !app.querySelector) return null;
+  return app.querySelector('.screen') || app.querySelector('.center-screen');
+}
+
 function render() {
   var app = document.getElementById('app');
+
+  // Rendering replaces #app wholesale, which destroys the scroll container and
+  // drops the user back at the top. Since a status change or a note now
+  // re-renders on the tap itself, that happened on every single click. Carry the
+  // position across a re-render of the SAME screen; moving to a different screen
+  // should still start at the top.
+  var key = screenKey();
+  var previous = scrollHost(app);
+  var keepTo = (previous && key === lastScreenKey) ? previous.scrollTop : 0;
+
   var html = '';
 
   if (route === 'login')         html = screenLogin();
@@ -250,6 +332,12 @@ function render() {
   if (ui.showDueModal && state.due) html += dueModal();
 
   app.innerHTML = html;
+  lastScreenKey = key;
+
+  if (keepTo) {
+    var host = scrollHost(app);
+    if (host) host.scrollTop = keepTo;
+  }
 }
 
 /* ============ LOGIN (phone + PIN, no OTP) ============ */
@@ -650,18 +738,65 @@ function dueModal() {
 
 /* ============ TASK DETAIL ============ */
 function openTask(taskId) {
+  var cached = boardTask(taskId);
+
+  // The board already holds the whole task — listTasks_ and getTask_ are both
+  // built by decorateTask_, sub-tasks and notes included — so a spinner here was
+  // 2-4 seconds spent fetching what we were already holding. Show it now and
+  // reconcile in the background.
+  if (cached) {
+    state.detail = cached;
+    go('detail', { taskId: taskId });
+    refreshDetailQuietly(taskId);
+    return;
+  }
+
+  // Not on the board (opened from the due popup after a change, say) — we do
+  // have to wait for this one.
   renderLoading();
   API.getTask(taskId)
     .then(function (data) {
       state.detail = data.task;
       go('detail', { taskId: taskId });
-      // Refresh the board quietly so counts are current when the user goes back.
-      API.listTasks().then(function (res) {
-        state.tasks = res.tasks || [];
-        state.counts = res.counts || {};
-      }).catch(function () {});
+      refreshBoardQuietly();
     })
     .catch(apiError);
+}
+
+function boardTask(taskId) {
+  for (var i = 0; i < state.tasks.length; i++) {
+    if (String(state.tasks[i].id) === String(taskId)) return state.tasks[i];
+  }
+  return null;
+}
+
+/** Bring the open task up to date without a spinner, and without stomping edits. */
+function refreshDetailQuietly(taskId) {
+  API.getTask(taskId)
+    .then(function (data) {
+      // Bail if the user has moved on, or if a write of theirs is in flight —
+      // overwriting state.detail underneath an optimistic change would make the
+      // screen flicker back to the old value.
+      if (route !== 'detail') return;
+      if (ui.busy) return;
+      if (!state.detail || String(state.detail.id) !== String(taskId)) return;
+
+      state.detail = data.task;
+      syncBoardFromDetail();
+      render();
+    })
+    .catch(function () {});   // the cached copy is already on screen and usable
+}
+
+/** Keep the board counts current without making anyone wait for them. */
+function refreshBoardQuietly() {
+  return API.listTasks()
+    .then(function (res) {
+      state.tasks = res.tasks || [];
+      state.counts = res.counts || {};
+      if (route === 'home') render();
+    })
+    .catch(function () {});
 }
 
 function reloadDetail() {
@@ -679,7 +814,9 @@ function screenDetail() {
   var t = state.detail;
   if (!t) return screenHome();
 
-  var editable = canEditFields();
+  // A created task is locked. The pencil asks first, then opens the editor.
+  var unlocked = taskUnlocked();
+  var editable = canEditFields() && unlocked;
   var manage = canManage();
   var prog = taskProgress(t);
   var nextDue = taskNextDue(t);
@@ -697,6 +834,16 @@ function screenDetail() {
     (editable
       ? '<input class="editable-title" value="' + esc(t.title) + '" onchange="saveTitle(this.value)">'
       : '<div class="static-title">' + esc(t.title) + '</div>') +
+
+    (manage
+      ? '<div class="row-actions">' +
+          editLockButton(unlocked, 'requestTaskEdit()', 'lockTaskEdit()') +
+          (unlocked
+            ? '<span style="font-size:11px; color:var(--gray);">' +
+              esc('Changes turant save ho jaate hain') + '</span>'
+            : '') +
+        '</div>'
+      : '') +
 
     (isSupervisor()
       ? '<div class="perm-note">Aap sub-tasks tag/reassign kar sakte hain, status update kar sakte hain, ' +
@@ -749,7 +896,8 @@ function screenDetail() {
       esc(L('done', 'poora')) + ') — ' + esc(L('each has its own due date', 'har ek ki apni due date hai')) + '</div>' +
     (t.subtasks || []).map(function (s) { return subtaskRow(t, s); }).join('') +
 
-    (manage ? addSubtaskForm(t) : '') +
+    // Adding to an existing task is a change to it, so it sits behind the same lock.
+    (manage && unlocked ? addSubtaskForm(t) : '') +
 
     notesSection(t) +
 
@@ -767,13 +915,7 @@ function backToBoard() {
 
   // Board is drawn instantly from what we already have; the counts (which the
   // server derives) catch up a moment later without the user waiting on them.
-  API.listTasks()
-    .then(function (res) {
-      state.tasks = res.tasks || [];
-      state.counts = res.counts || {};
-      if (route === 'home') render();
-    })
-    .catch(function () {});   // stale counts are not worth an error toast
+  refreshBoardQuietly();
 }
 
 /**
@@ -795,9 +937,13 @@ function syncBoardFromDetail() {
 function subtaskRow(t, s) {
   var manage = canManage();
   var mine = isEmployee() && String(s.assignee) === String(state.currentUser.id);
-  var dropdownOpen = ui.openTagDropdown === s.id;
   var badge = dueBadge(s.due_date, s.status);
   var canToggle = manage || mine;
+
+  // Status and notes are the everyday actions and stay open. Reassigning,
+  // moving the due date and deleting are edits, and wait behind the pencil.
+  var unlocked = manage && subtaskUnlocked(s.id);
+  var dropdownOpen = unlocked && ui.openTagDropdown === s.id;
 
   var html = '' +
   '<div class="subtask-item">' +
@@ -808,11 +954,11 @@ function subtaskRow(t, s) {
       '<div class="subtask-title' + (s.status === 'Done' ? ' done' : '') + '">' + esc(s.title) +
       '</div>' +
 
-      '<div class="subtask-assignee"' + (manage ? ' onclick="toggleTagDropdown(' + jsStr(s.id) + ')"' : '') + '>' +
+      '<div class="subtask-assignee"' + (unlocked ? ' onclick="toggleTagDropdown(' + jsStr(s.id) + ')"' : '') + '>' +
         '<div class="mini-avatar" style="margin:0; width:18px;height:18px;font-size:8px;">' +
           esc(s.assignee_initials || '?') + '</div>' +
         '<span>' + esc(s.assignee_name || L('Unassigned', 'Assign nahi hua')) + '</span>' +
-        (manage ? '<span>&#9662;</span>' : '') +
+        (unlocked ? '<span>&#9662;</span>' : '') +
       '</div>' +
 
       (dropdownOpen
@@ -824,7 +970,7 @@ function subtaskRow(t, s) {
         : '') +
 
       '<div class="row-actions">' +
-        (manage
+        (unlocked
           ? '<input type="date" class="form-input" style="max-width:150px; padding:6px 8px; font-size:13px;" ' +
             'value="' + esc(s.due_date || '') + '" onchange="saveSubtaskDue(' + jsStr(s.id) + ', this.value)">'
           : '<span style="font-size:11.5px; color:var(--gray);">' + esc(L('Due', 'Due') + ' ' + fmtDate(s.due_date)) + '</span>') +
@@ -852,9 +998,14 @@ function subtaskRow(t, s) {
       '<div class="row-actions">' +
         '<button class="copy-btn" onclick="copySubtask(' + jsStr(s.id) + ')">&#128203; ' +
           esc(L('Copy', 'Copy')) + '</button>' +
+        (manage
+          ? editLockButton(unlocked,
+              'requestSubtaskEdit(' + jsStr(s.id) + ')',
+              'lockSubtaskEdit(' + jsStr(s.id) + ')')
+          : '') +
       '</div>' +
     '</div>' +
-    (manage ? '<div class="subtask-del" onclick="removeSubtask(' + jsStr(s.id) + ')">&#10005;</div>' : '') +
+    (unlocked ? '<div class="subtask-del" onclick="removeSubtask(' + jsStr(s.id) + ')">&#10005;</div>' : '') +
   '</div>';
 
   return html;
@@ -1013,10 +1164,39 @@ function saveTitle(value) {
 }
 
 function saveField(field, value) {
+  // Moving a due date shifts what the whole team is chasing, so it is confirmed.
+  // Type and priority are cheap to correct and are not.
+  if (field === 'reference_due_date') {
+    var was = state.detail.reference_due_date || '';
+    if (String(was) === String(value || '')) return;
+    if (!confirm(dueDatePrompt(L('the overall due date', 'overall due date'), was, value))) {
+      render();   // put the date input back to what is actually saved
+      return;
+    }
+  }
+
   if (!guard()) return;
   var payload = { id: state.detail.id };
   payload[field] = value;
   API.updateTask(payload).then(reloadDetail).catch(apiError);
+}
+
+/**
+ * Wording for a due-date change. Named rather than generic because "are you
+ * sure?" tells nobody anything — the dates are the point.
+ */
+function dueDatePrompt(what, from, to) {
+  if (!to) {
+    return L('Remove ' + what + '?',
+             what.charAt(0).toUpperCase() + what.slice(1) + ' hata dein?');
+  }
+  if (from) {
+    return L('Change ' + what + ' from ' + fmtDate(from) + ' to ' + fmtDate(to) + '?',
+             what.charAt(0).toUpperCase() + what.slice(1) + ' ' + fmtDate(from) +
+             ' se ' + fmtDate(to) + ' kar dein?');
+  }
+  return L('Set ' + what + ' to ' + fmtDate(to) + '?',
+           what.charAt(0).toUpperCase() + what.slice(1) + ' ' + fmtDate(to) + ' set karein?');
 }
 
 function toggleSubtask(subId, currentStatus) {
@@ -1114,6 +1294,17 @@ function addSubtaskNote(subId) {
 }
 
 function saveSubtaskDue(subId, value) {
+  var sub = detailSubtask(subId);
+  var was = sub ? (sub.due_date || '') : '';
+  if (String(was) === String(value || '')) return;
+
+  var what = L('the due date for "' + (sub ? sub.title : '') + '"',
+               '"' + (sub ? sub.title : '') + '" ki due date');
+  if (!confirm(dueDatePrompt(what, was, value))) {
+    render();   // the input is showing a date we did not save — redraw from state
+    return;
+  }
+
   if (!guard()) return;
   API.updateSubtask({ id: subId, due_date: value })
     .then(function () { showToast(L('Due date updated', 'Due date update ho gayi')); return reloadDetail(); })
@@ -1126,6 +1317,29 @@ function toggleTagDropdown(subId) {
 }
 
 function reassignSubtask(subId, userId) {
+  var sub = detailSubtask(subId);
+  if (sub && String(sub.assignee) === String(userId)) {   // already theirs
+    ui.openTagDropdown = null;
+    render();
+    return;
+  }
+
+  var title = sub ? sub.title : '';
+  var to = firstName(userName(userId));
+  var from = (sub && sub.assignee_name) ? firstName(sub.assignee_name) : '';
+
+  var message = from
+    ? L('Move "' + title + '" from ' + from + ' to ' + to + '?',
+        '"' + title + '" ' + from + ' se ' + to + ' ko de dein?')
+    : L('Assign "' + title + '" to ' + to + '?',
+        '"' + title + '" ' + to + ' ko assign karein?');
+
+  if (!confirm(message)) {
+    ui.openTagDropdown = null;
+    render();
+    return;
+  }
+
   if (!guard()) return;
   ui.openTagDropdown = null;
   API.updateSubtask({ id: subId, assignee: userId })
