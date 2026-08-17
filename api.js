@@ -24,14 +24,59 @@ var API = (function () {
     return token;
   }
 
-  function call(action, payload) {
-    var body = Object.assign({}, payload || {}, { action: action });
-    if (token) body.token = token;
+  /**
+   * Actions that are safe to send twice.
+   *
+   * When a call fails without an answer — a dropped mobile connection, or the
+   * HTML error page Apps Script occasionally returns on a cold start — we cannot
+   * tell whether the server ran it or not. Retrying is only safe when running it
+   * twice lands in the same place as running it once.
+   *
+   * Reads always qualify. Of the writes, only the ones that SET a named value do:
+   * subtasks.update writes status='Done', not "flip it", so a second write is a
+   * no-op. tasks.create / subtasks.create / notes.create / master.add are
+   * deliberately absent — a retry there would append a duplicate row. So are the
+   * deletes: the row is gone the first time, and the retry would answer with a
+   * confusing "not found" for something that actually succeeded.
+   */
+  var RETRYABLE = [
+    'ping', 'me', 'auth.checkPhone',
+    'tasks.list', 'tasks.get', 'master.list', 'team.list',
+    'reminders.due', 'admin.purgePreview',
+    'tasks.update', 'subtasks.update', 'team.resetPin'
+  ];
 
+  var RETRY_DELAY_MS = 800;
+
+  function isRetryable(action) {
+    return RETRYABLE.indexOf(action) !== -1;
+  }
+
+  function call(action, payload) {
     if (!CONFIG.API_URL || CONFIG.API_URL.indexOf('PASTE_YOUR') === 0) {
       return Promise.reject(new ApiError(
         'API_URL is not set. Open frontend/config.js and paste your Apps Script /exec URL.', 0));
     }
+
+    return attempt(action, payload).catch(function (err) {
+      // Only 'badresponse' and 'network' mean "no answer". A real API error
+      // (403, 404, 409...) is the server's considered reply — never retry that.
+      var noAnswer = err instanceof ApiError &&
+        (err.message === 'badresponse' || err.message === 'network');
+
+      if (!noAnswer || !isRetryable(action)) throw err;
+
+      return new Promise(function (resolve) {
+        setTimeout(resolve, RETRY_DELAY_MS);
+      }).then(function () {
+        return attempt(action, payload);
+      });
+    });
+  }
+
+  function attempt(action, payload) {
+    var body = Object.assign({}, payload || {}, { action: action });
+    if (token) body.token = token;
 
     return fetch(CONFIG.API_URL, {
       method: 'POST',

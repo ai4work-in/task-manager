@@ -665,7 +665,12 @@ function openTask(taskId) {
 
 function reloadDetail() {
   return API.getTask(state.detail.id)
-    .then(function (data) { state.detail = data.task; ui.busy = false; render(); })
+    .then(function (data) {
+      state.detail = data.task;
+      syncBoardFromDetail();
+      ui.busy = false;
+      render();
+    })
     .catch(apiError);
 }
 
@@ -755,8 +760,35 @@ function screenDetail() {
 }
 
 function backToBoard() {
+  syncBoardFromDetail();
   state.detail = null;
   go('home');
+
+  // Board is drawn instantly from what we already have; the counts (which the
+  // server derives) catch up a moment later without the user waiting on them.
+  API.listTasks()
+    .then(function (res) {
+      state.tasks = res.tasks || [];
+      state.counts = res.counts || {};
+      if (route === 'home') render();
+    })
+    .catch(function () {});   // stale counts are not worth an error toast
+}
+
+/**
+ * Copy the open task's state back onto its board card, so going back doesn't
+ * show progress the user has already changed. reloadDetail() gives us exactly
+ * the shape the board uses, so this is a straight swap.
+ */
+function syncBoardFromDetail() {
+  var d = state.detail;
+  if (!d) return;
+  for (var i = 0; i < state.tasks.length; i++) {
+    if (String(state.tasks[i].id) === String(d.id)) {
+      state.tasks[i] = d;
+      return;
+    }
+  }
 }
 
 function subtaskRow(t, s) {
@@ -920,11 +952,22 @@ function toggleSubtask(subId, currentStatus) {
 
   API.updateSubtask({ id: subId, status: next })
     .then(function (res) {
+      if (res.task_status) state.detail.status = res.task_status;
+
+      // Completing a task is the one case that needs the server: purge_due — the
+      // date this task gets permanently deleted — is computed there, and it is
+      // far too important to guess at. Every other outcome we already know, so
+      // don't make the user wait through a second round trip for it.
       if (res.task_status === 'Done') {
         showToast(L('All sub-tasks done — task marked complete. It will be permanently deleted in 2 days.',
                     'Sabhi sub-tasks poore — task complete. 2 din mein permanently delete ho jayega.'));
+        return reloadDetail();
       }
-      return reloadDetail();
+
+      state.detail.purge_due = '';   // no longer Done, so nothing is queued for deletion
+      syncBoardFromDetail();
+      ui.busy = false;
+      render();
     })
     .catch(function (err) {
       // Put the box back the way the server still has it.
