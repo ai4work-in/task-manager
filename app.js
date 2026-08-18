@@ -30,8 +30,9 @@ var ui = {
   settingsTab: 'types',
   openTagDropdown: null,
   openSubtaskNotes: null,
-  // Everything is locked once created. The pencil unlocks it, for this visit to
-  // this screen only — navigating away locks it again (see go()).
+  // Everything is locked once created — status and notes included. The pencil
+  // unlocks it, for this visit to this screen only — navigating away locks it
+  // again (see go()). The lock gates writes; reading is never gated.
   unlockedTask: null,
   unlockedSubtasks: {},
   draftSubtasks: [],
@@ -835,15 +836,15 @@ function screenDetail() {
       ? '<input class="editable-title" value="' + esc(t.title) + '" onchange="saveTitle(this.value)">'
       : '<div class="static-title">' + esc(t.title) + '</div>') +
 
-    (manage
-      ? '<div class="row-actions">' +
-          editLockButton(unlocked, 'requestTaskEdit()', 'lockTaskEdit()') +
-          (unlocked
-            ? '<span style="font-size:11px; color:var(--gray);">' +
-              esc('Changes turant save ho jaate hain') + '</span>'
-            : '') +
-        '</div>'
-      : '') +
+    // Shown to every role, not just managers: task notes are behind this lock
+    // now, and posting one is the only write an Employee has at task level.
+    '<div class="row-actions">' +
+      editLockButton(unlocked, 'requestTaskEdit()', 'lockTaskEdit()') +
+      (unlocked
+        ? '<span style="font-size:11px; color:var(--gray);">' +
+          esc('Changes turant save ho jaate hain') + '</span>'
+        : '') +
+    '</div>' +
 
     (isSupervisor()
       ? '<div class="perm-note">Aap sub-tasks tag/reassign kar sakte hain, status update kar sakte hain, ' +
@@ -899,7 +900,7 @@ function screenDetail() {
     // Adding to an existing task is a change to it, so it sits behind the same lock.
     (manage && unlocked ? addSubtaskForm(t) : '') +
 
-    notesSection(t) +
+    notesSection(t, unlocked) +
 
     (isAdmin()
       ? '<button class="danger-btn" onclick="deleteTask()">' + esc('Delete task permanently') + '</button>'
@@ -940,25 +941,34 @@ function subtaskRow(t, s) {
   var badge = dueBadge(s.due_date, s.status);
   var canToggle = manage || mine;
 
-  // Status and notes are the everyday actions and stay open. Reassigning,
-  // moving the due date and deleting are edits, and wait behind the pencil.
-  var unlocked = manage && subtaskUnlocked(s.id);
-  var dropdownOpen = unlocked && ui.openTagDropdown === s.id;
+  // Nothing on a created sub-task is writable until the pencil unlocks it —
+  // status and notes included (2026-08-18, by request: locked by default so no
+  // tap can change anything by accident).
+  //
+  // One lock, two scopes, because unlocking must not hand anyone a control their
+  // role forbids: `canAct` is the everyday work (tick, status, notes) and is open
+  // to the assignee as well as managers; `canEdit` is the structural stuff
+  // (reassign, move the due date, delete) and stays manager-only.
+  var open = subtaskUnlocked(s.id);
+  var canAct = canToggle && open;
+  var canEdit = manage && open;
+  var dropdownOpen = canEdit && ui.openTagDropdown === s.id;
 
   var html = '' +
   '<div class="subtask-item">' +
-    '<div class="checkbox' + (s.status === 'Done' ? ' checked' : '') + '"' +
-      (canToggle ? ' onclick="toggleSubtask(' + jsStr(s.id) + ', ' + jsStr(s.status) + ')"' : '') + '>' +
+    '<div class="checkbox' + (s.status === 'Done' ? ' checked' : '') +
+      (canAct ? '' : ' locked') + '"' +
+      (canAct ? ' onclick="toggleSubtask(' + jsStr(s.id) + ', ' + jsStr(s.status) + ')"' : '') + '>' +
       (s.status === 'Done' ? '&#10003;' : '') + '</div>' +
     '<div class="subtask-text">' +
       '<div class="subtask-title' + (s.status === 'Done' ? ' done' : '') + '">' + esc(s.title) +
       '</div>' +
 
-      '<div class="subtask-assignee"' + (unlocked ? ' onclick="toggleTagDropdown(' + jsStr(s.id) + ')"' : '') + '>' +
+      '<div class="subtask-assignee"' + (canEdit ? ' onclick="toggleTagDropdown(' + jsStr(s.id) + ')"' : '') + '>' +
         '<div class="mini-avatar" style="margin:0; width:18px;height:18px;font-size:8px;">' +
           esc(s.assignee_initials || '?') + '</div>' +
         '<span>' + esc(s.assignee_name || L('Unassigned', 'Assign nahi hua')) + '</span>' +
-        (unlocked ? '<span>&#9662;</span>' : '') +
+        (canEdit ? '<span>&#9662;</span>' : '') +
       '</div>' +
 
       (dropdownOpen
@@ -970,7 +980,7 @@ function subtaskRow(t, s) {
         : '') +
 
       '<div class="row-actions">' +
-        (unlocked
+        (canEdit
           ? '<input type="date" class="form-input" style="max-width:150px; padding:6px 8px; font-size:13px;" ' +
             'value="' + esc(s.due_date || '') + '" onchange="saveSubtaskDue(' + jsStr(s.id) + ', this.value)">'
           : '<span style="font-size:11.5px; color:var(--gray);">' + esc(L('Due', 'Due') + ' ' + fmtDate(s.due_date)) + '</span>') +
@@ -979,8 +989,10 @@ function subtaskRow(t, s) {
       '</div>' +
 
       // The status list is admin-managed (Settings -> Statuses), so this picks up
-      // whatever Shannkey has added without a code change.
-      (canToggle
+      // whatever Shannkey has added without a code change. Behind the lock it
+      // still has to be *readable* — the badge above shows due info, not the
+      // status name, so a custom status like "Blocked" would otherwise vanish.
+      (canAct
         ? '<div class="row-actions">' +
             '<select class="form-input" style="max-width:150px; padding:6px 8px; font-size:13px;" ' +
               'onchange="setSubtaskStatus(' + jsStr(s.id) + ', this.value)">' +
@@ -991,21 +1003,25 @@ function subtaskRow(t, s) {
               }).join('') +
             '</select>' +
           '</div>'
-        : '') +
+        : '<div class="row-actions"><span class="status-static">' +
+            esc(statusLabel(s.status)) + '</span></div>') +
 
-      subtaskNotes(s, canToggle) +
+      subtaskNotes(s, canToggle, canAct) +
 
       '<div class="row-actions">' +
         '<button class="copy-btn" onclick="copySubtask(' + jsStr(s.id) + ')">&#128203; ' +
           esc(L('Copy', 'Copy')) + '</button>' +
-        (manage
-          ? editLockButton(unlocked,
+        // Offered to the assignee too, not just managers — status now sits behind
+        // this lock, so an Employee with no pencil could never update their own
+        // sub-task at all.
+        (canToggle
+          ? editLockButton(open,
               'requestSubtaskEdit(' + jsStr(s.id) + ')',
               'lockSubtaskEdit(' + jsStr(s.id) + ')')
           : '') +
       '</div>' +
     '</div>' +
-    (unlocked ? '<div class="subtask-del" onclick="removeSubtask(' + jsStr(s.id) + ')">&#10005;</div>' : '') +
+    (canEdit ? '<div class="subtask-del" onclick="removeSubtask(' + jsStr(s.id) + ')">&#10005;</div>' : '') +
   '</div>';
 
   return html;
@@ -1015,14 +1031,15 @@ function subtaskRow(t, s) {
  * Notes on one sub-task — where partial progress gets recorded, since a
  * sub-task's status can't say "6 of 10 slides done".
  *
- * `canPost` is the same test as the checkbox: your own sub-task if you're an
- * Employee, anyone's if you manage. The server enforces it again.
+ * `mayPost` is the role test — your own sub-task if you're an Employee, anyone's
+ * if you manage. The server enforces it again. `unlocked` is the pencil: posting
+ * is a write, so it waits behind the lock. Reading never does.
  */
-function subtaskNotes(s, canPost) {
+function subtaskNotes(s, mayPost, unlocked) {
   var notes = s.notes || [];
   var open = ui.openSubtaskNotes === s.id;
 
-  if (!notes.length && !canPost) return '';
+  if (!notes.length && !mayPost) return '';
 
   var header = '<div class="subtask-notes-toggle" onclick="toggleSubtaskNotes(' + jsStr(s.id) + ')">' +
     esc(L('Notes', 'Notes')) + (notes.length ? ' (' + notes.length + ')' : '') +
@@ -1046,17 +1063,22 @@ function subtaskNotes(s, canPost) {
       esc(L('No notes on this sub-task yet.', 'Is sub-task par abhi koi note nahi hai.')) + '</div>';
   }
 
+  var composer = '';
+  if (mayPost && unlocked) {
+    composer = '<div class="subtask-input-row" style="margin-top:6px;">' +
+        '<input class="form-input" id="subNote_' + esc(s.id) + '" placeholder="' +
+          esc(L('Progress update...', 'Kitna kaam hua, likhein...')) + '">' +
+        '<button class="add-subtask-btn" onclick="addSubtaskNote(' + jsStr(s.id) + ')">' +
+          esc(L('Post', 'Post karein')) + '</button>' +
+      '</div>';
+  } else if (mayPost) {
+    // Say why the box is missing, or the panel just looks broken.
+    composer = '<div class="lock-hint">' + esc(L('Unlock with the pencil to add a note.',
+      'Note likhne ke liye pencil se unlock karein.')) + '</div>';
+  }
+
   return '<div class="row-actions">' + header + '</div>' +
-    '<div class="subtask-notes">' + body +
-      (canPost
-        ? '<div class="subtask-input-row" style="margin-top:6px;">' +
-            '<input class="form-input" id="subNote_' + esc(s.id) + '" placeholder="' +
-              esc(L('Progress update...', 'Kitna kaam hua, likhein...')) + '">' +
-            '<button class="add-subtask-btn" onclick="addSubtaskNote(' + jsStr(s.id) + ')">' +
-              esc(L('Post', 'Post karein')) + '</button>' +
-          '</div>'
-        : '') +
-    '</div>';
+    '<div class="subtask-notes">' + body + composer + '</div>';
 }
 
 function toggleSubtaskNotes(subId) {
@@ -1093,7 +1115,8 @@ function addSubtaskForm(t) {
 }
 
 /* --- notes --- */
-function notesSection(t) {
+/** `unlocked` is the task pencil: existing notes always read, posting is a write. */
+function notesSection(t, unlocked) {
   // Employees may only tag admins/supervisors — the server enforces this too.
   var options = isEmployee()
     ? state.team.filter(function (u) { return u.role === 'admin' || u.role === 'supervisor'; })
@@ -1115,19 +1138,22 @@ function notesSection(t) {
         '</div>';
       }).join('')) +
 
-  '<textarea class="form-input" id="noteText" placeholder="' +
-    esc(L('Add a note...', 'Note likhein...')) + '" style="margin-top:10px;"></textarea>' +
-  '<div class="subtask-input-row">' +
-    '<select class="form-input" id="noteTag">' +
-      '<option value="">' + esc(isEmployee()
-        ? 'Admin ya supervisor ko tag karein (optional)'
-        : L('Tag someone (optional)', 'Kisi ko tag karein (optional)')) + '</option>' +
-      options.map(function (u) {
-        return '<option value="' + esc(u.id) + '">' + esc(u.name) + ' (' + esc(u.role) + ')</option>';
-      }).join('') +
-    '</select>' +
-    '<button class="add-subtask-btn" onclick="addNote()">' + esc(L('Post', 'Post karein')) + '</button>' +
-  '</div>';
+  (!unlocked
+    ? '<div class="lock-hint">' + esc(L('Unlock with the pencil above to add a note.',
+        'Note likhne ke liye upar pencil se unlock karein.')) + '</div>'
+    : '<textarea class="form-input" id="noteText" placeholder="' +
+        esc(L('Add a note...', 'Note likhein...')) + '" style="margin-top:10px;"></textarea>' +
+      '<div class="subtask-input-row">' +
+        '<select class="form-input" id="noteTag">' +
+          '<option value="">' + esc(isEmployee()
+            ? 'Admin ya supervisor ko tag karein (optional)'
+            : L('Tag someone (optional)', 'Kisi ko tag karein (optional)')) + '</option>' +
+          options.map(function (u) {
+            return '<option value="' + esc(u.id) + '">' + esc(u.name) + ' (' + esc(u.role) + ')</option>';
+          }).join('') +
+        '</select>' +
+        '<button class="add-subtask-btn" onclick="addNote()">' + esc(L('Post', 'Post karein')) + '</button>' +
+      '</div>');
 }
 
 /* ============ DETAIL ACTIONS ============ */
