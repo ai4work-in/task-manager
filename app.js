@@ -36,6 +36,12 @@ var ui = {
   unlockedTask: null,
   unlockedSubtasks: {},
   draftSubtasks: [],
+  // Assignee pills on the two "add a sub-task" forms. Kept in state, not read
+  // off the DOM, because a pill tap must not re-render (that would wipe the
+  // title being typed next to it).
+  draftSubAssignees: [],
+  addSubAssignees: [],
+  newTitle: '',
   newTaskType: null,
   newTaskPriority: null,
   payload: {},
@@ -81,6 +87,74 @@ function userName(id) {
 
 function firstName(name) {
   return String(name || '').split(' ')[0];
+}
+
+/**
+ * A sub-task can be assigned to several people (2026-09-17). The server sends
+ * `assignees` as [{id, name, initials}]; the fallback reads the comma-joined
+ * `assignee` field against the team list, for rows the client has patched
+ * locally and not re-fetched.
+ */
+function subAssignees(s) {
+  if (s && s.assignees) return s.assignees;
+  var out = [];
+  String((s && s.assignee) || '').split(',').forEach(function (id) {
+    id = id.trim();
+    if (!id) return;
+    var u = userById(id);
+    out.push({ id: id, name: u ? u.name : '', initials: u ? u.initials : '?' });
+  });
+  return out;
+}
+
+function assigneeIds(s) {
+  return subAssignees(s).map(function (p) { return String(p.id); });
+}
+
+function isAssignedToMe(s) {
+  return !!state.currentUser && assigneeIds(s).indexOf(String(state.currentUser.id)) !== -1;
+}
+
+/** "Ravi, Priya" — first names, in assignment order. */
+function assigneeFirstNames(s) {
+  return subAssignees(s).map(function (p) { return firstName(p.name); }).join(', ');
+}
+
+/** One small avatar per person. `style` is the per-avatar inline sizing. */
+function avatarStack(people, style) {
+  return people.map(function (p) {
+    return '<div class="mini-avatar"' + (style ? ' style="' + style + '"' : '') + '>' +
+      esc(p.initials || '?') + '</div>';
+  }).join('');
+}
+
+/**
+ * Tappable team pills for picking a sub-task's assignees. `selected` is the id
+ * list held in ui state; `toggleFn` is the name of the handler that flips one
+ * id in it. The handler flips the pill class itself rather than re-rendering.
+ */
+function assigneePicker(selected, toggleFn) {
+  return '<div class="select-row assignee-picker">' + state.team.map(function (u) {
+    var on = selected.indexOf(String(u.id)) !== -1;
+    return '<div class="opt-pill' + (on ? ' sel' : '') + '" onclick="' + toggleFn + '(' +
+      jsStr(u.id) + ', this)">' + esc(firstName(u.name)) + '</div>';
+  }).join('') + '</div>';
+}
+
+function toggleInList(list, id) {
+  var key = String(id);
+  var i = list.indexOf(key);
+  if (i === -1) list.push(key); else list.splice(i, 1);
+}
+
+function toggleAddSubAssignee(id, el) {
+  toggleInList(ui.addSubAssignees, id);
+  if (el) el.classList.toggle('sel', ui.addSubAssignees.indexOf(String(id)) !== -1);
+}
+
+function toggleDraftSubAssignee(id, el) {
+  toggleInList(ui.draftSubAssignees, id);
+  if (el) el.classList.toggle('sel', ui.draftSubAssignees.indexOf(String(id)) !== -1);
 }
 
 function todayKey() {
@@ -161,6 +235,7 @@ function go(r, payload) {
   route = r;
   ui.payload = payload || {};
   ui.openTagDropdown = null;
+  ui.addSubAssignees = [];
   // Leaving the screen re-locks everything, so nobody comes back later to a task
   // still sitting open for editing.
   ui.unlockedTask = null;
@@ -589,9 +664,11 @@ function adminCard(t) {
 
   var seen = {}, avatars = '';
   (t.subtasks || []).forEach(function (s) {
-    if (!s.assignee || seen[s.assignee]) return;
-    seen[s.assignee] = true;
-    avatars += '<div class="mini-avatar">' + esc(s.assignee_initials || '?') + '</div>';
+    subAssignees(s).forEach(function (p) {
+      if (seen[p.id]) return;
+      seen[p.id] = true;
+      avatars += '<div class="mini-avatar">' + esc(p.initials || '?') + '</div>';
+    });
   });
 
   var fill = t.status === 'Done' ? 'var(--green)' : (badge.urgent ? 'var(--red)' : 'var(--navy)');
@@ -711,7 +788,7 @@ function dueModal() {
         '<div class="due-item-text">' +
           '<div class="due-item-title">' + esc(i.title) + '</div>' +
           '<div class="due-item-meta">' + esc(i.task_title) + ' &middot; ' + esc(fmtDate(i.due_date)) +
-            (canManage() && i.assignee_name ? ' &middot; ' + esc(firstName(i.assignee_name)) : '') +
+            (canManage() && subAssignees(i).length ? ' &middot; ' + esc(assigneeFirstNames(i)) : '') +
           '</div>' +
         '</div>' +
       '</div>';
@@ -937,7 +1014,7 @@ function syncBoardFromDetail() {
 
 function subtaskRow(t, s) {
   var manage = canManage();
-  var mine = isEmployee() && String(s.assignee) === String(state.currentUser.id);
+  var mine = isEmployee() && isAssignedToMe(s);
   var badge = dueBadge(s.due_date, s.status);
   var canToggle = manage || mine;
 
@@ -953,6 +1030,8 @@ function subtaskRow(t, s) {
   var canAct = canToggle && open;
   var canEdit = manage && open;
   var dropdownOpen = canEdit && ui.openTagDropdown === s.id;
+  var people = subAssignees(s);
+  var ids = assigneeIds(s);
 
   var html = '' +
   '<div class="subtask-item">' +
@@ -965,17 +1044,21 @@ function subtaskRow(t, s) {
       '</div>' +
 
       '<div class="subtask-assignee"' + (canEdit ? ' onclick="toggleTagDropdown(' + jsStr(s.id) + ')"' : '') + '>' +
-        '<div class="mini-avatar" style="margin:0; width:18px;height:18px;font-size:8px;">' +
-          esc(s.assignee_initials || '?') + '</div>' +
-        '<span>' + esc(s.assignee_name || L('Unassigned', 'Assign nahi hua')) + '</span>' +
+        (people.length
+          ? avatarStack(people, 'margin:0; width:18px;height:18px;font-size:8px;')
+          : '<div class="mini-avatar" style="margin:0; width:18px;height:18px;font-size:8px;">?</div>') +
+        '<span>' + esc(people.length ? assigneeFirstNames(s) : L('Unassigned', 'Assign nahi hua')) + '</span>' +
         (canEdit ? '<span>&#9662;</span>' : '') +
       '</div>' +
 
+      // Each row toggles one person in or out — a sub-task can carry several.
       (dropdownOpen
         ? '<div class="tag-dropdown">' + state.team.map(function (u) {
-            return '<div class="tag-opt" onclick="reassignSubtask(' + jsStr(s.id) + ', ' + jsStr(u.id) + ')">' +
+            var on = ids.indexOf(String(u.id)) !== -1;
+            return '<div class="tag-opt' + (on ? ' on' : '') + '" onclick="reassignSubtask(' + jsStr(s.id) + ', ' + jsStr(u.id) + ')">' +
               '<div class="mini-avatar" style="margin:0;width:18px;height:18px;font-size:8px;">' +
-              esc(u.initials) + '</div>' + esc(u.name) + '</div>';
+              esc(u.initials) + '</div>' + esc(u.name) +
+              '<span class="tag-check">' + (on ? '&#10003;' : '') + '</span></div>';
           }).join('') + '</div>'
         : '') +
 
@@ -1103,12 +1186,9 @@ function addSubtaskForm(t) {
     '<input class="form-input" id="addSubTitle" placeholder="' +
       esc(L('Add a sub-task...', 'Naya sub-task add karein...')) + '">' +
   '</div>' +
+  '<div class="field-label" style="margin-top:8px;">' + esc(L('Assign to (tap one or more)', 'Kisko dena hai (ek ya zyada chunein)')) + '</div>' +
+  assigneePicker(ui.addSubAssignees, 'toggleAddSubAssignee') +
   '<div class="subtask-input-row">' +
-    '<select class="form-input" id="addSubAssignee" style="max-width:110px;">' +
-      state.team.map(function (u) {
-        return '<option value="' + esc(u.id) + '">' + esc(firstName(u.name)) + '</option>';
-      }).join('') +
-    '</select>' +
     '<input class="form-input" type="date" id="addSubDue" value="' + esc(t.reference_due_date || todayKey()) + '">' +
     '<button class="add-subtask-btn" onclick="addSubtask()">' + esc(L('+ Add', '+ Tag karein')) + '</button>' +
   '</div>';
@@ -1342,23 +1422,25 @@ function toggleTagDropdown(subId) {
   render();
 }
 
+/**
+ * Adds or removes one person on a sub-task — it can carry several. The confirm
+ * names who is being added/removed and to what; the payload is the full new
+ * list, comma-joined, which is also how the sheet stores it.
+ */
 function reassignSubtask(subId, userId) {
   var sub = detailSubtask(subId);
-  if (sub && String(sub.assignee) === String(userId)) {   // already theirs
-    ui.openTagDropdown = null;
-    render();
-    return;
-  }
+  if (!sub) return;
 
-  var title = sub ? sub.title : '';
-  var to = firstName(userName(userId));
-  var from = (sub && sub.assignee_name) ? firstName(sub.assignee_name) : '';
+  var title = sub.title;
+  var who = firstName(userName(userId));
+  var ids = assigneeIds(sub);
+  var removing = ids.indexOf(String(userId)) !== -1;
 
-  var message = from
-    ? L('Move "' + title + '" from ' + from + ' to ' + to + '?',
-        '"' + title + '" ' + from + ' se ' + to + ' ko de dein?')
-    : L('Assign "' + title + '" to ' + to + '?',
-        '"' + title + '" ' + to + ' ko assign karein?');
+  var message = removing
+    ? L('Remove ' + who + ' from "' + title + '"?',
+        '"' + title + '" se ' + who + ' ko hataayein?')
+    : L('Add ' + who + ' to "' + title + '"?',
+        '"' + title + '" mein ' + who + ' ko add karein?');
 
   if (!confirm(message)) {
     ui.openTagDropdown = null;
@@ -1366,12 +1448,15 @@ function reassignSubtask(subId, userId) {
     return;
   }
 
+  var next = ids.slice();
+  toggleInList(next, userId);
+
   if (!guard()) return;
-  ui.openTagDropdown = null;
-  API.updateSubtask({ id: subId, assignee: userId })
+  API.updateSubtask({ id: subId, assignee: next.join(',') })
     .then(function () {
-      showToast(L('Sub-task tagged to ' + firstName(userName(userId)),
-                  'Sub-task ' + firstName(userName(userId)) + ' ko tag ho gaya'));
+      showToast(removing
+        ? L(who + ' removed from sub-task', who + ' sub-task se hat gaya')
+        : L(who + ' added to sub-task', who + ' sub-task mein add ho gaya'));
       return reloadDetail();
     })
     .catch(apiError);
@@ -1382,12 +1467,16 @@ function addSubtask() {
   if (!title) return;
   if (!guard()) return;
 
+  var assignees = ui.addSubAssignees.slice();
   API.createSubtask({
     task_id: state.detail.id,
     title: title,
-    assignee: val('addSubAssignee'),
+    assignee: assignees.join(','),
     due_date: val('addSubDue')
-  }).then(reloadDetail).catch(apiError);
+  }).then(function () {
+    ui.addSubAssignees = [];
+    return reloadDetail();
+  }).catch(apiError);
 }
 
 function removeSubtask(subId) {
@@ -1525,6 +1614,8 @@ function legacyCopy(text, done) {
 /* ============ CREATE TASK (Admin + Supervisor) ============ */
 function openCreate() {
   ui.draftSubtasks = [];
+  ui.draftSubAssignees = [];
+  ui.newTitle = '';
   ui.newTaskType = state.taskTypes[0] || '';
   ui.newTaskPriority = (state.priorities[0] && state.priorities[0].name) || '';
   go('create');
@@ -1538,7 +1629,7 @@ function screenCreate() {
   '</div>' +
   '<div class="screen"><div class="detail-body">' +
     '<div class="field-label">' + esc(L('Task title', 'Task ka title')) + '</div>' +
-    '<input class="form-input" id="newTitle" placeholder="' +
+    '<input class="form-input" id="newTitle" value="' + esc(ui.newTitle) + '" oninput="ui.newTitle=this.value" placeholder="' +
       esc(L('e.g. Prepare September invoices', 'jaise: September ke invoices taiyar karein')) + '">' +
 
     '<div class="field-label">Task type</div>' +
@@ -1562,7 +1653,7 @@ function screenCreate() {
     '<div class="field-label">' + esc(L('Sub-tasks', 'Sub-tasks')) + '</div>' +
     ui.draftSubtasks.map(function (s, i) {
       return '<div class="draft-subtask"><span>' + esc(s.title) +
-        ' <span style="color:var(--gray);">— ' + esc(firstName(userName(s.assignee))) +
+        ' <span style="color:var(--gray);">— ' + esc(assigneeFirstNames(s) || L('Unassigned', 'Assign nahi hua')) +
         ' &middot; ' + esc(L('Due', 'Due') + ' ' + fmtDate(s.due_date)) + '</span></span>' +
         '<span class="subtask-del" onclick="removeDraftSubtask(' + i + ')">&#10005;</span></div>';
     }).join('') +
@@ -1571,12 +1662,9 @@ function screenCreate() {
       '<input class="form-input" id="draftSubTitle" placeholder="' +
         esc(L('Sub-task title...', 'Sub-task ka naam...')) + '">' +
     '</div>' +
+    '<div class="field-label" style="margin-top:8px;">' + esc(L('Assign to (tap one or more)', 'Kisko dena hai (ek ya zyada chunein)')) + '</div>' +
+    assigneePicker(ui.draftSubAssignees, 'toggleDraftSubAssignee') +
     '<div class="subtask-input-row">' +
-      '<select class="form-input" id="draftSubAssignee" style="max-width:110px;">' +
-        state.team.map(function (u) {
-          return '<option value="' + esc(u.id) + '">' + esc(firstName(u.name)) + '</option>';
-        }).join('') +
-      '</select>' +
       '<input class="form-input" type="date" id="draftSubDue" value="' + esc(todayKey()) + '">' +
       '<button class="add-subtask-btn" onclick="addDraftSubtask()">' + esc(L('+ Add', '+ Tag karein')) + '</button>' +
     '</div>' +
@@ -1598,9 +1686,10 @@ function addDraftSubtask() {
   }
   ui.draftSubtasks.push({
     title: title,
-    assignee: val('draftSubAssignee'),
+    assignee: ui.draftSubAssignees.join(','),
     due_date: val('draftSubDue')
   });
+  ui.draftSubAssignees = [];
   render();
 }
 
@@ -1628,6 +1717,7 @@ function createTask() {
     .then(function () {
       showToast(L('Task created', 'Task ban gaya'));
       ui.draftSubtasks = [];
+      ui.newTitle = '';
       route = 'home';
       renderLoading();
       return loadBoard(false);

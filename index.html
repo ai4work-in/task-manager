@@ -231,6 +231,12 @@
     -webkit-align-items:center; align-items:center; cursor:pointer; border-bottom:1px solid var(--line);}
   .tag-opt > * + *{ margin-left:8px; }
   .tag-opt:last-child{border-bottom:none;}
+  /* A sub-task can carry several people: rows already on it are ticked, and a
+     tap on any row adds or removes just that person. */
+  .tag-opt.on{background:var(--navy-light); color:var(--navy);}
+  .tag-opt .tag-check{margin-left:auto; color:var(--navy); font-weight:700; min-width:14px; text-align:right;}
+  .assignee-picker{margin-top:4px; margin-bottom:6px;}
+  .assignee-picker .opt-pill{padding:7px 12px; font-size:12px;}
 
   .draft-subtask{display:-webkit-flex; display:flex; -webkit-justify-content:space-between; justify-content:space-between;
     -webkit-align-items:center; align-items:center; background:var(--white); border:1px solid var(--line);
